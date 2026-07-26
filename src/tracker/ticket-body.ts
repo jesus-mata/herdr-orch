@@ -18,6 +18,16 @@ const WHAT_TO_BUILD = 'What to build';
 const ACCEPTANCE_CRITERIA = 'Acceptance criteria';
 
 /**
+ * A fenced code block, opening or closing.
+ *
+ * Nothing inside one is markdown. A Ticket that quotes a heading or a bullet — and
+ * a Ticket about a codebase routinely does — would otherwise have its prose cut
+ * short at the fence, or acquire an acceptance criterion out of a code sample.
+ * Neither fails loudly, which is what makes them worth handling here.
+ */
+const FENCE = /^\s*(?:```|~~~)/;
+
+/**
  * Reads a Ticket body, or refuses it.
  *
  * The issue template is the only contract the author has to keep, so a body that
@@ -41,19 +51,25 @@ export function parseTicketBody(body: string, reference: string): TicketBody {
   return { whatToBuild, acceptanceCriteria };
 }
 
-/** `## Heading` through `###### Heading`, keyed by the heading lowercased. */
+/**
+ * `## Heading` through `###### Heading`, keyed by the heading lowercased.
+ *
+ * Headings inside a fenced code block are text, not structure.
+ */
 function splitSections(body: string): Map<string, string> {
   const sections = new Map<string, string>();
   const headingPattern = /^#{2,6}\s+(.+?)\s*$/;
   let heading: string | undefined;
   let lines: string[] = [];
+  let fenced = false;
 
   const flush = (): void => {
     if (heading !== undefined) sections.set(heading, lines.join('\n').trim());
   };
 
   for (const line of body.split(/\r?\n/)) {
-    const match = headingPattern.exec(line);
+    if (FENCE.test(line)) fenced = !fenced;
+    const match = fenced ? null : headingPattern.exec(line);
     if (match?.[1] === undefined) {
       lines.push(line);
       continue;
@@ -87,10 +103,21 @@ function requireSection(
   return content;
 }
 
-/** `- item`, `* item`, and either with a `[ ]` or `[x]` checkbox. */
+/**
+ * `- item`, `* item`, and either with a `[ ]` or `[x]` checkbox.
+ *
+ * A bullet inside a fenced code block is a code sample, not a criterion.
+ */
 function parseItems(section: string): string[] {
   const items: string[] = [];
+  let fenced = false;
+
   for (const line of section.split('\n')) {
+    if (FENCE.test(line)) {
+      fenced = !fenced;
+      continue;
+    }
+    if (fenced) continue;
     const match = /^\s*[-*]\s+(?:\[[ xX]\]\s*)?(.*\S)\s*$/.exec(line);
     if (match?.[1] !== undefined) items.push(match[1]);
   }

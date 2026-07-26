@@ -2,7 +2,7 @@ import { IntakeError } from '../domain/errors.ts';
 import type { Spec, Ticket } from '../domain/spec.ts';
 import { runCommand, type CommandRunner } from '../process/command.ts';
 import { parseTicketBody } from './ticket-body.ts';
-import type { Tracker } from './tracker.ts';
+import type { SpecIntake, Tracker } from './tracker.ts';
 
 /** The label whose presence on a parent issue marks its [[Spec]] ready. */
 const READY_LABEL = 'ready-for-agent';
@@ -12,7 +12,9 @@ const HUMAN_LABEL = 'ready-for-human';
 /**
  * How many issues one page holds. A Batch reading more ready Specs than this in
  * one night is not a case worth paginating for yet; it is a case worth noticing,
- * which is what the thrown error does.
+ * which is what the thrown error does — a page that came back full is a page with
+ * something behind it, and silently working from the first hundred would leave
+ * Specs unread and unreported, which reads exactly like a quiet night.
  */
 const PAGE_SIZE = 100;
 
@@ -96,7 +98,39 @@ export function createGitHubTracker(options: GitHubTrackerOptions = {}): Tracker
       '--jq',
       ISSUE_PROJECTION,
     ]);
-    return parseIssues(stdout, endpoint);
+    const parsed = parseIssues(stdout, endpoint);
+
+    if (parsed.length >= PAGE_SIZE) {
+      throw new IntakeError(
+        `${endpoint} filled a page of ${String(PAGE_SIZE)} and intake does not paginate. ` +
+          'Reading only the first page would leave work unread and unreported, so it ' +
+          'stops here instead.',
+      );
+    }
+    return parsed;
+  };
+
+  /**
+   * One parent issue's [[Ticket]]s, or a refusal naming what could not be read.
+   *
+   * The catch is the whole point. Intake refuses the Spec it cannot read and no
+   * other: a malformed Ticket body, or a `gh` call that fails on this Spec's
+   * children, costs this Spec its night rather than the Batch's.
+   */
+  const readSpec = async (target: string, parent: GitHubIssue): Promise<SpecIntake> => {
+    try {
+      const children = await issues(`repos/${target}/issues/${String(parent.number)}/sub_issues`, [
+        `per_page=${String(PAGE_SIZE)}`,
+      ]);
+      return { kind: 'ready', spec: toSpec(parent, children, humanLabel) };
+    } catch (error) {
+      return {
+        kind: 'refused',
+        spec: bareSpec(parent),
+        reason: error instanceof Error ? error.message : String(error),
+        cause: error,
+      };
+    }
   };
 
   return {
@@ -114,14 +148,11 @@ export function createGitHubTracker(options: GitHubTrackerOptions = {}): Tracker
         // backlog in, and a Batch's outcome should not depend on creation order.
         .sort((left, right) => left.number - right.number);
 
-      const specs: Spec[] = [];
+      const intakes: SpecIntake[] = [];
       for (const parent of parents) {
-        const children = await issues(`repos/${target}/issues/${String(parent.number)}/sub_issues`, [
-          `per_page=${String(PAGE_SIZE)}`,
-        ]);
-        specs.push(toSpec(parent, children, humanLabel));
+        intakes.push(await readSpec(target, parent));
       }
-      return specs;
+      return intakes;
     },
   };
 }
@@ -132,15 +163,23 @@ function toSpec(
   humanLabel: string,
 ): Spec {
   return {
-    id: String(parent.number),
-    reference: `#${String(parent.number)}`,
-    title: parent.title,
-    url: parent.url,
+    ...bareSpec(parent),
     // A closed sub-issue is work already delivered, not work to re-run. Open ones
     // stay in GitHub's order, which is the order the breakdown published them in.
     tickets: children
       .filter((child) => child.state === 'open' && !child.isPullRequest)
       .map((child) => toTicket(child, humanLabel)),
+  };
+}
+
+/** The Spec's identity alone, which is all a refusal can honestly carry. */
+function bareSpec(parent: GitHubIssue): Spec {
+  return {
+    id: String(parent.number),
+    reference: `#${String(parent.number)}`,
+    title: parent.title,
+    url: parent.url,
+    tickets: [],
   };
 }
 

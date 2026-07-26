@@ -25,6 +25,19 @@ describe('the GitHub Forge adapter', () => {
     assert.equal(fake.calls[0]?.cwd, '/repo');
   });
 
+  it('fetches the default branch and bases a Run on the remote-tracking ref', async () => {
+    const fake = createFakeRunner(ghStub);
+
+    const base = await createGitHubForge({ repoRoot: '/repo', run: fake.runner }).fetchBase();
+
+    assert.equal(base, 'origin/main', 'a Run starts at what the remote holds, not the local branch');
+    const fetch = fake.calls[1];
+    assert.ok(fetch);
+    assert.equal(fetch.command, 'git');
+    assert.deepEqual(fetch.args, ['fetch', 'origin', 'main']);
+    assert.equal(fetch.cwd, '/repo');
+  });
+
   it('pushes the branch to the remote, and never forces', async () => {
     const fake = createFakeRunner(ghStub);
 

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { IntakeError } from '../src/domain/errors.ts';
+import type { Spec } from '../src/domain/spec.ts';
 import { createGitHubTracker } from '../src/tracker/github-tracker.ts';
+import type { RefusedSpec, SpecIntake } from '../src/tracker/tracker.ts';
 import { createFakeRunner, type RecordedCommand } from './helpers/fake-runner.ts';
 
 const TICKET_BODY = `## Parent
@@ -59,6 +60,18 @@ function ghStub(options: {
   };
 }
 
+function expectReady(intake: SpecIntake | undefined): Spec {
+  assert.ok(intake, 'expected an intake');
+  if (intake.kind !== 'ready') assert.fail(`expected a ready Spec; it was refused: ${intake.reason}`);
+  return intake.spec;
+}
+
+function expectRefused(intake: SpecIntake | undefined): RefusedSpec {
+  assert.ok(intake, 'expected an intake');
+  if (intake.kind !== 'refused') assert.fail('expected a refusal, got a ready Spec');
+  return intake;
+}
+
 describe('the GitHub Tracker adapter', () => {
   it('reads ready Specs and their Tickets in the tracker\'s order', async () => {
     const fake = createFakeRunner(
@@ -85,13 +98,12 @@ describe('the GitHub Tracker adapter', () => {
     }).readySpecs();
 
     assert.deepEqual(
-      specs.map((spec) => spec.reference),
+      specs.map((intake) => intake.spec.reference),
       ['#1', '#9'],
       'Specs come back in issue order, not the API\'s newest-first',
     );
 
-    const spec = specs[0];
-    assert.ok(spec);
+    const spec = expectReady(specs[0]);
     assert.equal(spec.id, '1');
     assert.equal(spec.title, 'Spec: orchestrator v1');
     assert.equal(spec.url, 'https://github.com/o/r/issues/1');
@@ -156,21 +168,62 @@ describe('the GitHub Tracker adapter', () => {
     assert.deepEqual(specs, []);
   });
 
-  it('fails intake when a Ticket body does not parse', async () => {
+  it('refuses the Spec whose Ticket body does not parse, and no other', async () => {
     const fake = createFakeRunner(
       ghStub({
-        labelled: [issue({ number: 1, subIssues: 1 })],
-        children: { '1': [issue({ number: 3, body: 'Just some prose.' })] },
+        labelled: [issue({ number: 1, subIssues: 1 }), issue({ number: 2, subIssues: 1 })],
+        children: {
+          '1': [issue({ number: 3, body: 'Just some prose.' })],
+          '2': [issue({ number: 4 })],
+        },
       }),
     );
 
+    const specs = await createGitHubTracker({
+      repo: 'o/r',
+      cwd: '/repo',
+      run: fake.runner,
+    }).readySpecs();
+
+    const refused = expectRefused(specs[0]);
+    assert.equal(refused.spec.reference, '#1');
+    assert.match(refused.reason, /#3/, 'the refusal names the Ticket it could not read');
+    assert.deepEqual(refused.spec.tickets, [], 'a refusal carries no half-read Ticket list');
+
+    const readable = expectReady(specs[1]);
+    assert.equal(readable.reference, '#2');
+    assert.deepEqual(
+      readable.tickets.map((ticket) => ticket.reference),
+      ['#4'],
+      'one Spec\'s malformed Ticket does not cost another its night',
+    );
+  });
+
+  it('refuses a Spec whose children could not be fetched at all', async () => {
+    const fake = createFakeRunner((call) => {
+      if (call.args.includes('repos/o/r/issues/1/sub_issues')) return new Error('gh: 502');
+      return ghStub({ labelled: [issue({ number: 1, subIssues: 1 })], children: {} })(call);
+    });
+
+    const specs = await createGitHubTracker({
+      repo: 'o/r',
+      cwd: '/repo',
+      run: fake.runner,
+    }).readySpecs();
+
+    assert.match(expectRefused(specs[0]).reason, /502/);
+  });
+
+  it('refuses to work from a page that came back full', async () => {
+    const labelled = Array.from({ length: 100 }, (_, index) =>
+      issue({ number: index + 1, subIssues: 1 }),
+    );
+    const fake = createFakeRunner(ghStub({ labelled, children: {} }));
+
     await assert.rejects(
       () => createGitHubTracker({ repo: 'o/r', cwd: '/repo', run: fake.runner }).readySpecs(),
-      (error: unknown) => {
-        assert.ok(error instanceof IntakeError);
-        assert.match(error.message, /#3/);
-        return true;
-      },
+      /page of 100/,
+      'reading only the first hundred would leave Specs unread and unreported',
     );
   });
 

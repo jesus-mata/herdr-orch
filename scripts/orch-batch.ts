@@ -13,6 +13,7 @@
  */
 import os from 'node:os';
 import path from 'node:path';
+import { IntakeError } from '../src/domain/errors.ts';
 import { HerdrClient } from '../src/herdr/index.ts';
 import { createGitHubForge } from '../src/forge/github-forge.ts';
 import { createGitHubTracker } from '../src/tracker/github-tracker.ts';
@@ -35,7 +36,12 @@ const tracker = createGitHubTracker({ cwd: repoRoot });
 const forge = createGitHubForge({ repoRoot });
 
 if (dryRun) {
-  for (const spec of await tracker.readySpecs()) {
+  for (const intake of await tracker.readySpecs()) {
+    const { spec } = intake;
+    if (intake.kind === 'refused') {
+      log(`${spec.reference} ${spec.title} — refused at intake: ${intake.reason}`);
+      continue;
+    }
     log(`${spec.reference} ${spec.title}`);
     for (const ticket of spec.tickets) {
       log(`  ${ticket.reference} ${ticket.title}${ticket.needsHuman ? ' (needs a human)' : ''}`);
@@ -62,6 +68,14 @@ try {
   // An escalation is a legitimate outcome, not a crash — but a Batch with one in it
   // needs a human, and the exit code is what a scheduler reads.
   process.exitCode = result.runs.some((run) => run.kind === 'escalated') ? 1 : 0;
+} catch (error) {
+  // A Batch rejects for one thing: a backlog that could not be read at all. There
+  // is no Run to escalate then, so this line is the whole report, and a stack
+  // trace for an unreachable tracker is noise. Anything else is a bug, and a bug
+  // gets its stack.
+  if (error instanceof IntakeError) log(`batch: intake failed, so nothing ran: ${error.message}`);
+  else log(`batch: nothing ran: ${String(error instanceof Error ? error.stack : error)}`);
+  process.exitCode = 1;
 } finally {
   await herdr.close();
 }

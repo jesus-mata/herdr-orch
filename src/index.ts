@@ -20,7 +20,7 @@ export type {
 } from './domain/outcome.ts';
 export { IntakeError } from './domain/errors.ts';
 
-export type { Tracker } from './tracker/tracker.ts';
+export type { ReadySpec, RefusedSpec, SpecIntake, Tracker } from './tracker/tracker.ts';
 export { createGitHubTracker } from './tracker/github-tracker.ts';
 export type { GitHubTrackerOptions } from './tracker/github-tracker.ts';
 export { parseTicketBody } from './tracker/ticket-body.ts';

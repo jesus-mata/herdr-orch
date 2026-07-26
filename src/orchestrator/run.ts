@@ -81,16 +81,23 @@ export async function runSpec(spec: Spec, context: RunContext): Promise<RunOutco
       );
     }
 
+    stoppedAt = `reading the base branch for ${spec.reference}`;
+    // Two answers, and they are not the same one. The pull request is opened
+    // against the branch's name; the worktree starts at the ref the Forge just
+    // fetched, which is what that branch actually holds right now.
     const base = await context.forge.defaultBranch();
+    const baseRef = await context.forge.fetchBase();
     const branch = branchFor(spec);
     const requestedPath = path.join(context.workspaceRoot, worktreeDirName(spec));
 
     stoppedAt = `creating the worktree for ${spec.reference}`;
-    context.log(`${spec.reference}: creating worktree ${requestedPath} on ${branch} from ${base}`);
+    context.log(
+      `${spec.reference}: creating worktree ${requestedPath} on ${branch} from ${baseRef}`,
+    );
     const workspace = await context.herdr.createWorktreeWorkspace({
       cwd: context.repoRoot,
       branch,
-      base,
+      base: baseRef,
       path: requestedPath,
       label: workspaceLabel(spec),
       focus: false,

@@ -4,7 +4,13 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 import { runBatch } from '../src/orchestrator/batch.ts';
 import { createGit } from '../src/git/git.ts';
 import type { BatchResult, DeliveredRun, EscalatedRun, RunOutcome } from '../src/domain/outcome.ts';
-import { createFakeForge, createFakeTracker, specFixture, ticketFixture } from './helpers/fakes.ts';
+import {
+  createFakeForge,
+  createFakeTracker,
+  refusedSpec,
+  specFixture,
+  ticketFixture,
+} from './helpers/fakes.ts';
 import { createScriptedHerdr, type ScriptedHerdr, type ScriptedWorker } from './helpers/scripted-agent.ts';
 import { createTempRepo, type TempRepo } from './helpers/temp-repo.ts';
 
@@ -41,7 +47,7 @@ describe('the walking skeleton: one Spec, one Ticket, to a pull request', () => 
   /** Drives the whole Batch through its single entry point. Nothing else is faked. */
   const drive = async (
     worker: ScriptedWorker,
-    specs = [SPEC],
+    specs: Parameters<typeof createFakeTracker>[0] = [SPEC],
   ): Promise<{
     readonly result: BatchResult;
     readonly herdr: ScriptedHerdr;
@@ -237,6 +243,26 @@ describe('the walking skeleton: one Spec, one Ticket, to a pull request', () => 
     assert.match(run.reason, /the remote hung up/);
     assert.equal(run.commits.length, 1, 'the commit it did make is still reported');
     assert.equal(forge.pullRequests.length, 0);
+  });
+
+  it('escalates a Spec intake refused, without costing the rest of the Batch its night', async () => {
+    const unreadable = specFixture({ id: '7', title: 'Spec: unreadable' });
+
+    const { result, forge } = await drive(implementsTheTicket, [
+      refusedSpec(unreadable, 'Ticket #70: its body has no "What to build" section.'),
+      SPEC,
+    ]);
+
+    assert.equal(result.runs.length, 2, 'a refusal is an outcome, not a missing one');
+    const refused = expectEscalated(result.runs[0]);
+    assert.equal(refused.spec.reference, '#7');
+    assert.equal(refused.stoppedAt, 'intake');
+    assert.match(refused.reason, /#70.*What to build/);
+    assert.equal(refused.preserved, undefined, 'nothing was created, so nothing is preserved');
+
+    const delivered = expectDelivered(result.runs[1]);
+    assert.equal(delivered.spec.id, '1');
+    assert.equal(forge.pullRequests.length, 1, 'the readable Spec still got its pull request');
   });
 
   it('lets one Run fail without touching another', async () => {

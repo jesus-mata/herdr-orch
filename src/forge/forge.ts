@@ -17,8 +17,19 @@ export interface PullRequestRequest {
  * before merge is the point.
  */
 export interface Forge {
-  /** The branch a [[Deliverable]] is opened against, and a Run's worktree based on. */
+  /** The branch a [[Deliverable]] is opened against. */
   defaultBranch(): Promise<string>;
+  /**
+   * Brings the default branch up to date and returns the ref a [[Run]]'s worktree
+   * starts at.
+   *
+   * A Run bases on the remote's branch rather than the local one, because an
+   * unattended Orchestrator never pulls: the local branch is as old as the last
+   * time a human did, and a Worker building on a week-old base says nothing about
+   * it. Fetching lives here for the same reason pushing does — this is where the
+   * remote and its credentials are.
+   */
+  fetchBase(): Promise<string>;
   pushBranch(branch: string): Promise<void>;
   openPullRequest(request: PullRequestRequest): Promise<PullRequest>;
 }

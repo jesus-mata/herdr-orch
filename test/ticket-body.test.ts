@@ -53,6 +53,50 @@ describe('the Ticket parser', () => {
     assert.deepEqual(body.acceptanceCriteria, ['It works']);
   });
 
+  it('reads a heading inside a fenced code block as prose, not as a section', () => {
+    const body = parseTicketBody(
+      [
+        '## What to build',
+        '',
+        'Add the section to the README:',
+        '',
+        '```md',
+        '## Acceptance criteria',
+        '',
+        '- placeholder from the example',
+        '```',
+        '',
+        'Then wire it up to the parser.',
+        '',
+        '## Acceptance criteria',
+        '',
+        '- The README renders',
+      ].join('\n'),
+      '#7',
+    );
+
+    assert.match(
+      body.whatToBuild,
+      /Then wire it up to the parser\.$/,
+      'the fence does not cut the prose short',
+    );
+    assert.deepEqual(
+      body.acceptanceCriteria,
+      ['The README renders'],
+      'and a bullet inside the fence is a code sample, not a criterion',
+    );
+  });
+
+  it('closes a fence opened with tildes', () => {
+    const body = parseTicketBody(
+      '## What to build\n\n~~~\n## Not a heading\n~~~\n\nReal prose.\n\n## Acceptance criteria\n\n- It works\n',
+      '#7',
+    );
+
+    assert.match(body.whatToBuild, /Real prose\./);
+    assert.deepEqual(body.acceptanceCriteria, ['It works']);
+  });
+
   it('accepts plain bullets as criteria', () => {
     const body = parseTicketBody('## What to build\n\nA thing.\n\n## Acceptance criteria\n\n- It works\n', '#7');
 

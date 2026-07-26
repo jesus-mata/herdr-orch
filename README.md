@@ -22,10 +22,14 @@ node --experimental-strip-types scripts/orch-batch.ts             # run it
 A Spec is an issue labelled `ready-for-agent` that has sub-issues; those sub-issues, open and in
 GitHub's own order, are its Tickets. A labelled issue with no sub-issues is a Ticket somebody
 labelled, not a Spec. A Ticket labelled `ready-for-human` is a HITL Ticket and is never attempted.
+A Spec whose Tickets cannot be read is refused on its own and escalates as itself; the rest of the
+Batch still runs.
 
 Each Run gets a worktree under `--workspace-root` (by default `~/.herdr-orch/worktrees`) on its own
-`orch/…` branch, a herdr workspace opened on it, and a tab and pane per Ticket. Worktrees and panes
-are left in place afterwards, deliberately: they are what an escalation preserves.
+`orch/…` branch, based on the default branch as the Forge has just fetched it — nobody pulls at 3am,
+so the Orchestrator does. It opens a herdr workspace on that worktree, with a tab and pane per
+Ticket. Worktrees and panes are left in place afterwards, deliberately: they are what an escalation
+preserves.
 
 ## Development
 

@@ -19,9 +19,10 @@ export interface GitHubForgeOptions {
  * that was not the Run's. And it never merges: the pull request is where a [[Run]]
  * ends, because human review before merge is the point.
  *
- * Pushing runs in `repoRoot` rather than in the Run's worktree. A linked worktree
- * shares the repository's refs, so the branch is pushable from either, and the main
- * repository is the one place that is certain to still exist.
+ * Fetching and pushing run in `repoRoot` rather than in the Run's worktree. A
+ * linked worktree shares the repository's refs, so the branch is pushable and the
+ * base fetchable from either, and the main repository is the one place that is
+ * certain to still exist.
  */
 export function createGitHubForge(options: GitHubForgeOptions): Forge {
   const run = options.run ?? runCommand;
@@ -34,20 +35,30 @@ export function createGitHubForge(options: GitHubForgeOptions): Forge {
     return result.stdout;
   };
 
+  const readDefaultBranch = async (): Promise<string> => {
+    defaultBranch ??= (
+      await gh([
+        'repo',
+        'view',
+        ...repoArgs,
+        '--json',
+        'defaultBranchRef',
+        '--jq',
+        '.defaultBranchRef.name',
+      ])
+    ).trim();
+    return defaultBranch;
+  };
+
   return {
-    defaultBranch: async () => {
-      defaultBranch ??= (
-        await gh([
-          'repo',
-          'view',
-          ...repoArgs,
-          '--json',
-          'defaultBranchRef',
-          '--jq',
-          '.defaultBranchRef.name',
-        ])
-      ).trim();
-      return defaultBranch;
+    defaultBranch: readDefaultBranch,
+
+    fetchBase: async () => {
+      const branch = await readDefaultBranch();
+      // Fetched every Run rather than once a Batch: a Run that started at 3am
+      // should begin from what the default branch held at 3am.
+      await run('git', ['fetch', remote, branch], { cwd: options.repoRoot });
+      return `${remote}/${branch}`;
     },
 
     pushBranch: async (branch) => {
