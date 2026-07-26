@@ -13,6 +13,8 @@ export type {
   WorktreeWorkspace,
 } from './client.ts';
 
+export type { HerdrApi } from './api.ts';
+
 export { AgentStatusWatcher } from './agent-status-watcher.ts';
 export type { AgentStatusWatcherOptions, ReconnectPolicy } from './agent-status-watcher.ts';
 
