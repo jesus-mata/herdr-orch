@@ -1,4 +1,5 @@
 import { AgentStatusWatcher, type ReconnectPolicy } from './agent-status-watcher.ts';
+import type { HerdrApi } from './api.ts';
 import { HerdrRequestTransport, type SendOptions } from './transport.ts';
 import type { SocketPathEnv } from './socket-path.ts';
 import {
@@ -125,8 +126,11 @@ export interface ReadPaneOptions {
  *
  * Everything above this line speaks the Orchestrator's vocabulary; everything
  * below speaks herdr's wire format.
+ *
+ * The `HerdrApi` it implements is the narrower surface a [[Run]] depends on, and
+ * the one the scripted-agent test fake stands in for.
  */
-export class HerdrClient {
+export class HerdrClient implements HerdrApi {
   readonly #transport: HerdrRequestTransport;
   #watcher: AgentStatusWatcher | undefined;
   readonly #reconnect: ReconnectPolicy | undefined;
