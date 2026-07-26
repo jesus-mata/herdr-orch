@@ -45,7 +45,7 @@ async function withWatcher(
       changesFor: (paneId) => changes.filter((change) => change.paneId === paneId),
     });
   } finally {
-    watcher.close();
+    await watcher.close();
     await server.close();
   }
 }
@@ -286,14 +286,14 @@ test('watch() rejects when the socket cannot be reached at all', async () => {
   try {
     await assert.rejects(watcher.watch('w1:p1'), HerdrError);
   } finally {
-    watcher.close();
+    await watcher.close();
   }
 });
 
 test('close() stops reconnecting', async () => {
   await withWatcher([PANE_A], async ({ stub, watcher, errors }) => {
     await watcher.watch(PANE_A.pane_id);
-    watcher.close();
+    await watcher.close();
 
     stub.subscriptionConnection()?.destroy();
     const subscribesAfterClose = stub.subscribeCount();
@@ -313,6 +313,91 @@ test('reports the last status it saw for a pane', async () => {
     await waitFor(() => changes.some((change) => change.status === 'blocked'), 'the change');
 
     assert.equal(watcher.lastStatus(PANE_A.pane_id), 'blocked');
+  });
+});
+
+test('an event that overtakes the reconcile snapshot survives it', async () => {
+  await withWatcher([PANE_A], async ({ stub, watcher, changes }) => {
+    // herdr renders the snapshot before the bytes reach us, and the subscription
+    // is a separate socket, so an event fired afterwards can arrive first.
+    stub.deferSnapshots();
+    const watching = watcher.watch(PANE_A.pane_id);
+    await waitFor(() => stub.heldSnapshots() === 1, 'the reconcile snapshot request');
+
+    // The Worker stops at a permission prompt. This is the only event herdr will
+    // ever send for that transition.
+    stub.emitStatusChange({ ...PANE_A, agent_status: 'blocked' });
+    await waitFor(() => changes.some((change) => change.status === 'blocked'), 'the event');
+
+    // Now the snapshot lands, still describing the pane as it was before.
+    stub.releaseSnapshots();
+    await watching;
+    await delay(40);
+
+    // Reporting `idle` here would leave the Orchestrator waiting on a Worker
+    // that is in fact stopped, with no further event coming to correct it.
+    assert.equal(watcher.lastStatus(PANE_A.pane_id), 'blocked');
+    assert.deepEqual(
+      changes.map((change) => change.status),
+      ['blocked'],
+    );
+  });
+});
+
+test('close() releases a subscription that was still being established', async () => {
+  await withWatcher([PANE_A], async ({ stub, watcher, changes }) => {
+    // Withholding the acknowledgement puts close() squarely inside the subscribe
+    // rather than racing it against a timer.
+    stub.deferSubscribes();
+    const watching = watcher.watch(PANE_A.pane_id);
+    await waitFor(() => stub.heldSubscribes() === 1, 'the subscribe to be in flight');
+
+    const closing = watcher.close();
+    stub.releaseSubscribes();
+    await closing;
+    await watching.catch(() => undefined);
+
+    // A leaked socket keeps the event loop alive and keeps feeding listeners
+    // long after the caller believed the watcher was shut down.
+    const connection = stub.subscriptionConnection();
+    assert.notEqual(connection, undefined);
+    await waitFor(() => connection?.destroyed === true, 'the subscription socket to be released');
+
+    const deliveredBefore = changes.length;
+    stub.emitStatusChange({ ...PANE_A, agent_status: 'blocked' });
+    await delay(60);
+
+    assert.equal(changes.length, deliveredBefore);
+  });
+});
+
+test('close() does not hang on a subscribe herdr never acknowledges', {
+  timeout: 5_000,
+}, async () => {
+  await withWatcher([PANE_A], async ({ stub, watcher }) => {
+    stub.deferSubscribes();
+    const watching = watcher.watch(PANE_A.pane_id);
+    await waitFor(() => stub.heldSubscribes() === 1, 'the subscribe to be in flight');
+
+    // Nothing is ever released. close() has to drop the half-open connection
+    // itself; awaiting a handshake that will not finish would wedge shutdown.
+    await watcher.close();
+    await watching.catch(() => undefined);
+  });
+});
+
+test('watch() refuses to revive a watcher that gave up reconnecting', async () => {
+  await withWatcher([PANE_A, PANE_B], async ({ server, watcher, errors }) => {
+    await watcher.watch(PANE_A.pane_id);
+
+    await server.stopListening();
+    await waitFor(() => errors.length === 1, 'the terminal reconnect failure');
+
+    // Accepting the pane would hand back a watcher that subscribes once and then
+    // never reconnects and never raises again — silence, dressed as health.
+    await server.resumeListening();
+    await assert.rejects(watcher.watch(PANE_B.pane_id), HerdrError);
+    assert.deepEqual(watcher.watched, [PANE_A.pane_id]);
   });
 });
 

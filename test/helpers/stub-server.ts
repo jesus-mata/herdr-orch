@@ -16,6 +16,8 @@ export interface StubConnection {
   readonly index: number;
   /** Messages this connection has received, in order. */
   readonly received: Record<string, unknown>[];
+  /** True once the socket is gone, whichever side let go of it. */
+  readonly destroyed: boolean;
   /** Writes raw bytes, newlines and all. The test decides the framing. */
   writeRaw(bytes: string | Buffer): void;
   /** Writes one JSON message followed by a newline. */
@@ -71,6 +73,9 @@ export async function startStubServer(handler: StubHandler): Promise<StubServer>
     const connection: StubConnection = {
       index,
       received,
+      get destroyed() {
+        return socket.destroyed;
+      },
       writeRaw: (bytes) => {
         if (!socket.destroyed) socket.write(bytes);
       },

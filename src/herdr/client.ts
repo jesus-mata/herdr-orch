@@ -356,10 +356,11 @@ export class HerdrClient {
     return this.#watcher?.lastStatus(paneId);
   }
 
-  close(): Promise<void> {
-    this.#watcher?.close();
+  /** Releases the subscription, including one still being established. */
+  async close(): Promise<void> {
+    const watcher = this.#watcher;
     this.#watcher = undefined;
-    return Promise.resolve();
+    await watcher?.close();
   }
 
   #ensureWatcher(): AgentStatusWatcher {

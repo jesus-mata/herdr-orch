@@ -77,6 +77,8 @@ export class AgentStatusWatcher {
   readonly #reconnectListeners: ReconnectListener[] = [];
 
   #connection: HerdrConnection | undefined;
+  /** One that has been opened but not yet finished its `events.subscribe`. */
+  #connecting: HerdrConnection | undefined;
   #retryTimer: NodeJS.Timeout | undefined;
   #closed = false;
   #failed = false;
@@ -125,6 +127,15 @@ export class AgentStatusWatcher {
   }
 
   async watch(paneId: string): Promise<void> {
+    // Giving up is terminal, and a watcher that accepted new panes afterwards
+    // would look healthy while never reconnecting again — the caller has to be
+    // told to build a new one rather than handed a quiet one.
+    if (this.#failed) {
+      throw new HerdrConnectionError(
+        `this watcher gave up reconnecting to the herdr socket at ${this.#socketPath}; ` +
+          'pane agent status is no longer observable through it',
+      );
+    }
     if (this.#watched.has(paneId)) return;
     this.#watched.add(paneId);
     await this.#resubscribe();
@@ -136,22 +147,49 @@ export class AgentStatusWatcher {
     await this.#resubscribe();
   }
 
-  close(): void {
+  /**
+   * Stops watching and releases the subscription.
+   *
+   * Awaits any replacement already in flight: a subscribe that was mid-connect
+   * when this was called would otherwise install its socket afterwards, leaving
+   * a connection nobody owns holding the event loop open.
+   */
+  async close(): Promise<void> {
     this.#closed = true;
     clearTimeout(this.#retryTimer);
     this.#retryTimer = undefined;
+    this.#releaseConnection();
+    // Dropping the half-established connection above makes its `events.subscribe`
+    // reject, so this settles rather than waiting on a handshake nobody will
+    // finish. `#pending` never rejects — `#resubscribe` wraps it.
+    await this.#pending;
+    this.#releaseConnection();
+  }
+
+  #releaseConnection(): void {
+    this.#connecting?.close();
+    this.#connecting = undefined;
     this.#connection?.close();
     this.#connection = undefined;
+  }
+
+  /**
+   * Read through a method, not the field: narrowing `this.#closed` survives an
+   * `await` in TypeScript's control-flow analysis, which is precisely the
+   * assumption a close() landing during that await breaks.
+   */
+  #isClosed(): boolean {
+    return this.#closed;
   }
 
   /** Replaces the subscription, awaiting any replacement already in flight. */
   #resubscribe(): Promise<void> {
     const run = this.#pending.then(async () => {
-      if (this.#closed) return;
-      this.#connection?.close();
-      this.#connection = undefined;
+      if (this.#isClosed() || this.#failed) return;
+      this.#releaseConnection();
       if (this.#watched.size === 0) return;
       await this.#subscribe();
+      if (this.#isClosed()) return;
       await this.#reconcile();
     });
     // Keep the chain alive even when this attempt rejects, so a later watch()
@@ -167,11 +205,23 @@ export class AgentStatusWatcher {
       connectTimeoutMs: this.#connectTimeoutMs,
     });
 
+    // Tracked before the handshake, not after: close() has to be able to reach a
+    // connection that is still being established, or it outlives the watcher.
+    this.#connecting = connection;
     try {
       await subscribeOn(connection, paneIds);
     } catch (error) {
       connection.close();
       throw error;
+    } finally {
+      if (this.#connecting === connection) this.#connecting = undefined;
+    }
+
+    // close() landed in the gap between the handshake finishing and this line.
+    // Installing the connection now would leak it past the watcher's lifetime.
+    if (this.#isClosed()) {
+      connection.close();
+      return;
     }
 
     this.#connection = connection;
@@ -230,7 +280,7 @@ export class AgentStatusWatcher {
 
   #attemptReconnect(attempt: number): void {
     const run = this.#pending.then(async () => {
-      if (this.#closed || this.#failed) return;
+      if (this.#isClosed() || this.#failed) return;
       if (this.#connection !== undefined) return; // A watch() call got there first.
       if (this.#watched.size === 0) return;
 
@@ -240,6 +290,7 @@ export class AgentStatusWatcher {
         this.#scheduleReconnect(attempt + 1);
         return;
       }
+      if (this.#isClosed()) return;
 
       for (const listener of this.#reconnectListeners) listener();
       await this.#reconcile();
@@ -251,8 +302,18 @@ export class AgentStatusWatcher {
    * Reads the live snapshot and reports any watched pane whose status differs
    * from the last one we delivered. Run after every successful subscribe, which
    * covers both the first look at a pane and the gap left by an outage.
+   *
+   * herdr renders the snapshot before the reply reaches us, and the subscription
+   * is a separate socket, so an event fired after the snapshot was taken can be
+   * delivered before it arrives. Any pane an event moved while the request was
+   * in flight is therefore left alone: the event is the newer truth, and
+   * overwriting it with the snapshot would report a blocked Worker as working
+   * and then never correct itself, herdr having already spent its one event on
+   * that transition.
    */
   async #reconcile(): Promise<void> {
+    const before = new Map(this.#lastStatus);
+
     let snapshot: { snapshot: SessionSnapshot };
     try {
       snapshot = await this.#transport.send<{ snapshot: SessionSnapshot }>(
@@ -267,7 +328,9 @@ export class AgentStatusWatcher {
 
     for (const pane of snapshot.snapshot.panes) {
       if (!this.#watched.has(pane.pane_id)) continue;
-      if (this.#lastStatus.get(pane.pane_id) === pane.agent_status) continue;
+      const delivered = this.#lastStatus.get(pane.pane_id);
+      if (delivered !== before.get(pane.pane_id)) continue; // An event overtook the reply.
+      if (delivered === pane.agent_status) continue;
 
       this.#emit({
         paneId: pane.pane_id,

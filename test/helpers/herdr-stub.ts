@@ -18,6 +18,31 @@ export interface HerdrStub {
   subscribeCount(): number;
   /** Pushes a pane agent status change down the subscription connection. */
   emitStatusChange(pane: StubPane, extra?: Record<string, unknown>): void;
+  /**
+   * Renders `session.snapshot` replies as usual but holds the bytes back, which
+   * is the window herdr always has between taking a snapshot and it arriving.
+   */
+  deferSnapshots(): void;
+  /** Delivers every held snapshot, as it was rendered when it was requested. */
+  releaseSnapshots(): void;
+  /** How many rendered snapshots are being held. */
+  heldSnapshots(): number;
+  /**
+   * Accepts `events.subscribe` but withholds the acknowledgement, leaving the
+   * client's subscribe genuinely in flight instead of racing it with a timer.
+   */
+  deferSubscribes(): void;
+  /** Acknowledges every held subscription. */
+  releaseSubscribes(): void;
+  /** How many subscriptions are waiting to be acknowledged. */
+  heldSubscribes(): number;
+}
+
+interface HeldSnapshot {
+  readonly connection: StubConnection;
+  readonly id: unknown;
+  /** The panes as they were when the request arrived, not as they are now. */
+  readonly panes: StubPane[];
 }
 
 /**
@@ -30,6 +55,29 @@ export function createHerdrStub(panes: StubPane[] = []): HerdrStub {
   let subscriptionConnection: StubConnection | undefined;
   let subscriptions: Record<string, unknown>[] = [];
   let subscribeCount = 0;
+  let deferringSnapshots = false;
+  let deferringSubscribes = false;
+  const held: HeldSnapshot[] = [];
+  const heldSubscribes: { connection: StubConnection; id: unknown }[] = [];
+
+  const sendSnapshot = (connection: StubConnection, id: unknown, panes: StubPane[]): void => {
+    connection.send({
+      id,
+      result: {
+        type: 'session_snapshot',
+        snapshot: {
+          version: '0.7.5',
+          protocol: 17,
+          workspaces: [],
+          tabs: [],
+          panes,
+          layouts: [],
+          agents: [],
+        },
+      },
+    });
+    connection.end();
+  };
 
   const handler: StubHandler = (connection, message) => {
     const method = message['method'];
@@ -40,27 +88,15 @@ export function createHerdrStub(panes: StubPane[] = []): HerdrStub {
       subscribeCount += 1;
       subscriptions = (params['subscriptions'] ?? []) as Record<string, unknown>[];
       subscriptionConnection = connection;
-      connection.send({ id, result: { type: 'subscription_started' } });
+      if (deferringSubscribes) heldSubscribes.push({ connection, id });
+      else connection.send({ id, result: { type: 'subscription_started' } });
       return; // Stays open: this connection is now an event stream.
     }
 
     if (method === 'session.snapshot') {
-      connection.send({
-        id,
-        result: {
-          type: 'session_snapshot',
-          snapshot: {
-            version: '0.7.5',
-            protocol: 17,
-            workspaces: [],
-            tabs: [],
-            panes: [...paneMap.values()],
-            layouts: [],
-            agents: [],
-          },
-        },
-      });
-      connection.end();
+      const panes = [...paneMap.values()].map((pane) => ({ ...pane }));
+      if (deferringSnapshots) held.push({ connection, id, panes });
+      else sendSnapshot(connection, id, panes);
       return;
     }
 
@@ -87,5 +123,28 @@ export function createHerdrStub(panes: StubPane[] = []): HerdrStub {
         },
       });
     },
+    deferSnapshots: () => {
+      deferringSnapshots = true;
+    },
+    releaseSnapshots: () => {
+      deferringSnapshots = false;
+      for (const snapshot of held.splice(0)) {
+        sendSnapshot(snapshot.connection, snapshot.id, snapshot.panes);
+      }
+    },
+    heldSnapshots: () => held.length,
+    deferSubscribes: () => {
+      deferringSubscribes = true;
+    },
+    releaseSubscribes: () => {
+      deferringSubscribes = false;
+      for (const subscribe of heldSubscribes.splice(0)) {
+        subscribe.connection.send({
+          id: subscribe.id,
+          result: { type: 'subscription_started' },
+        });
+      }
+    },
+    heldSubscribes: () => heldSubscribes.length,
   };
 }
