@@ -30,6 +30,9 @@ The socket API is mandatory, not a preference. `events.subscribe` and `events.wa
 there; the CLI's only reactive primitives are blocking waits, and every CLI call forks a process
 and opens a new connection. The CLI remains the human's tool for inspecting a live Batch.
 
+The "persistent connection" above turned out not to be available: herdr answers one request per
+connection. See ADR-0004, which amends this paragraph and leaves the rest of this decision intact.
+
 Because the Orchestrator has no model, every judgment must be pushed into a Phase and returned
 as a structured Verdict (see `CONTEXT.md`). Control flow can only branch on machine-readable
 data, never on "what the agent seemed to mean." This is a real constraint on prompt design, and

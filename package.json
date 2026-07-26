@@ -1,0 +1,23 @@
+{
+  "name": "herdr-orch",
+  "version": "0.0.0",
+  "private": true,
+  "description": "An unattended agent Orchestrator built on herdr",
+  "type": "module",
+  "engines": {
+    "node": ">=22.16.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test \"test/**/*.test.ts\"",
+    "check": "npm run typecheck && npm run lint && npm test"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.15.0",
+    "eslint": "^10.0.0",
+    "typescript": "^5.8.0",
+    "typescript-eslint": "^8.24.0"
+  }
+}
